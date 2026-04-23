@@ -9,7 +9,9 @@ from aiogram.fsm.storage.memory import MemoryStorage
 
 from bot.config import settings
 from bot.handlers import register_all_handlers
+from bot.services.anketa_api import AnketaAPIClient
 from bot.services.publisher import connect_rabbitmq, close_rabbitmq
+from bot.services.recommendation_api import RecommendationAPIClient
 from bot.services.user_api import UserAPIClient
 
 logging.basicConfig(
@@ -30,9 +32,16 @@ async def main() -> None:
     # HTTP-сессия для user_service
     http_session = aiohttp.ClientSession()
     user_api = UserAPIClient(settings.USER_SERVICE_URL, http_session)
+    anketa_api = AnketaAPIClient(settings.ANKETA_SERVICE_URL, http_session)
+    recommendation_api = RecommendationAPIClient(
+        settings.RECOMMENDATION_SERVICE_URL,
+        http_session,
+    )
 
     # Прокидываем зависимости через workflow_data
     dp["user_api"] = user_api
+    dp["anketa_api"] = anketa_api
+    dp["recommendation_api"] = recommendation_api
 
     # Подключение к RabbitMQ
     await connect_rabbitmq()

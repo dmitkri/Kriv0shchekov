@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
 from fastapi import FastAPI, Depends, HTTPException, status
+from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from services.user_service.config import settings
@@ -57,10 +58,8 @@ async def register_user(
     user, created = await get_or_create_user(session, body.user_id, body.username)
     if not created:
         # Пользователь уже существует — возвращаем 200
-        from fastapi.responses import JSONResponse
-        from services.user_service.schemas import UserResponse as UR
         return JSONResponse(
-            content=UR.model_validate(user).model_dump(mode="json"),
+            content=UserResponse.model_validate(user).model_dump(mode="json"),
             status_code=status.HTTP_200_OK,
         )
     return user

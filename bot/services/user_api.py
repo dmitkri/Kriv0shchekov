@@ -1,5 +1,5 @@
 import logging
-from typing import Optional
+from typing import Any, Optional
 
 import aiohttp
 
@@ -13,7 +13,7 @@ class UserAPIClient:
         self._base_url = base_url.rstrip("/")
         self._session = session
 
-    async def get_user(self, user_id: int) -> Optional[dict]:
+    async def get_user(self, user_id: int) -> Optional[dict[str, Any]]:
         """Возвращает данные пользователя или None если не найден."""
         try:
             async with self._session.get(
