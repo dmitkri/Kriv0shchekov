@@ -4,13 +4,16 @@ from sqlalchemy import (
     BigInteger,
     Boolean,
     DateTime,
+    ForeignKey,
+    Index,
+    Integer,
     SmallInteger,
     String,
     Text,
     UniqueConstraint,
     func,
 )
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
 class Base(DeclarativeBase):
@@ -48,6 +51,14 @@ class Anketa(ReadBase):
         server_default=func.now(),
         onupdate=func.now(),
     )
+    photos: Mapped[list["Photo"]] = relationship(
+        back_populates="anketa",
+        order_by="Photo.position",
+    )
+
+    @property
+    def photo_keys(self) -> list[str]:
+        return [photo.file_key for photo in self.photos]
 
     @property
     def profile_completed(self) -> bool:
@@ -65,16 +76,33 @@ class Anketa(ReadBase):
         return all(field not in (None, "") for field in required_fields)
 
 
+class Photo(ReadBase):
+    __tablename__ = "photos"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    anketa_account_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("anketas.account_id"),
+        nullable=False,
+    )
+    file_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    position: Mapped[int] = mapped_column(SmallInteger, nullable=False)
+    added_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    anketa: Mapped[Anketa] = relationship(back_populates="photos")
+
+
 class ProfileReaction(Base):
     __tablename__ = "profile_reactions"
     __table_args__ = (
         UniqueConstraint("viewer_id", "target_account_id", name="uq_profile_reactions_viewer_target"),
+        Index("ix_profile_reactions_viewer_created", "viewer_id", "created_at"),
+        Index("ix_profile_reactions_target_reaction", "target_account_id", "reaction_type"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     viewer_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
     target_account_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
-    reaction_type: Mapped[str] = mapped_column(String(10), nullable=False)
+    reaction_type: Mapped[str] = mapped_column(String(10), nullable=False, index=True)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
+        DateTime(timezone=True), server_default=func.now(), index=True
     )

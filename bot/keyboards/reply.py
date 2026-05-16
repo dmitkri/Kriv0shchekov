@@ -4,8 +4,8 @@ from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemo
 def main_menu_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text="👤 Моя анкета"), KeyboardButton(text="🔍 Смотреть анкеты")],
-            [KeyboardButton(text="❤️ Мэтчи"), KeyboardButton(text="⚙️ Настройки")],
+            [KeyboardButton(text="Моя анкета"), KeyboardButton(text="Смотреть анкеты")],
+            [KeyboardButton(text="Мэтчи"), KeyboardButton(text="Настройки")],
         ],
         resize_keyboard=True,
     )
@@ -49,6 +49,18 @@ def city_preference_keyboard() -> ReplyKeyboardMarkup:
 def cancel_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[[KeyboardButton(text="Отмена")]],
+        resize_keyboard=True,
+        one_time_keyboard=True,
+    )
+
+
+def photo_step_keyboard(has_existing_photos: bool) -> ReplyKeyboardMarkup:
+    keyboard = [[KeyboardButton(text="Готово")]]
+    if has_existing_photos:
+        keyboard.append([KeyboardButton(text="Оставить текущие фото")])
+    keyboard.append([KeyboardButton(text="Отмена")])
+    return ReplyKeyboardMarkup(
+        keyboard=keyboard,
         resize_keyboard=True,
         one_time_keyboard=True,
     )

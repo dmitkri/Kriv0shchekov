@@ -11,3 +11,4 @@ class AnketaStates(StatesGroup):
     waiting_for_want_age_min = State()
     waiting_for_want_age_max = State()
     waiting_for_want_city = State()
+    waiting_for_photo = State()

@@ -21,6 +21,7 @@ class RecommendationResponse(BaseModel):
     want_age_min: int
     want_age_max: int
     want_city: str
+    photo_keys: list[str]
     visible: bool
     photo_count: int
     scores: ScoreBreakdown
@@ -39,4 +40,3 @@ class ReactionResult(BaseModel):
 class RefreshResult(BaseModel):
     refreshed: bool
     cached_items: int
-

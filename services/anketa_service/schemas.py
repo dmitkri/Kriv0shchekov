@@ -17,6 +17,7 @@ class AnketaUpsert(BaseModel):
     want_age_min: int = Field(ge=18, le=100)
     want_age_max: int = Field(ge=18, le=100)
     want_city: str = Field(min_length=2, max_length=100)
+    photo_keys: list[str] = Field(default_factory=list, max_length=5)
     visible: bool = True
 
     @model_validator(mode="after")
@@ -37,6 +38,7 @@ class AnketaResponse(BaseModel):
     want_age_min: int
     want_age_max: int
     want_city: str
+    photo_keys: list[str]
     visible: bool
     photo_count: int
     created_at: datetime
@@ -44,4 +46,3 @@ class AnketaResponse(BaseModel):
     profile_completed: bool
 
     model_config = {"from_attributes": True}
-

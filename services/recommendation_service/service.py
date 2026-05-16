@@ -35,6 +35,7 @@ def _serialize_recommendation(anketa, scores: ScoreBreakdown) -> RecommendationR
         want_age_min=anketa.want_age_min,
         want_age_max=anketa.want_age_max,
         want_city=anketa.want_city,
+        photo_keys=list(anketa.photo_keys or []),
         visible=anketa.visible,
         photo_count=anketa.photo_count,
         scores=scores,
@@ -49,7 +50,14 @@ async def build_feed(session: AsyncSession, viewer_id: int) -> list[int]:
         raise ValueError("Заполни анкету до конца, чтобы мы могли подобрать рекомендации.")
 
     excluded_ids = await get_viewed_ids(session, viewer_id)
-    candidates = list(await get_candidate_anketas(session, viewer_id, excluded_ids))
+    candidates = list(
+        await get_candidate_anketas(
+            session,
+            viewer_id,
+            excluded_ids,
+            settings.FEED_CANDIDATE_POOL,
+        )
+    )
     if not candidates:
         return []
 
@@ -86,7 +94,7 @@ async def refresh_feed(session: AsyncSession, viewer_id: int) -> int:
     candidate_ids = await build_feed(session, viewer_id)
     if candidate_ids:
         await redis.rpush(key, *candidate_ids)
-        await redis.expire(key, 3600)
+        await redis.expire(key, settings.FEED_REDIS_TTL_SEC)
     return len(candidate_ids)
 
 
@@ -95,6 +103,10 @@ async def get_next_recommendation(
 ) -> RecommendationResponse | None:
     redis = get_redis()
     key = _feed_key(viewer_id)
+
+    viewer = await get_anketa(session, viewer_id)
+    if viewer is None:
+        raise ValueError("Сначала создай анкету, чтобы получать рекомендации.")
 
     if await redis.llen(key) == 0:
         await refresh_feed(session, viewer_id)
@@ -105,8 +117,7 @@ async def get_next_recommendation(
             return None
 
         anketa = await get_anketa(session, int(next_account_id))
-        viewer = await get_anketa(session, viewer_id)
-        if anketa is None or viewer is None:
+        if anketa is None:
             continue
 
         primary_score = calculate_primary_score(anketa)
@@ -138,4 +149,3 @@ async def register_reaction(
 ) -> RecommendationResponse | None:
     await save_reaction(session, viewer_id, target_account_id, reaction_type)
     return await get_next_recommendation(session, viewer_id)
-

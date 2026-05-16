@@ -177,3 +177,37 @@ accounts ──N:M── matches
 | Фото | MinIO (S3) |
 | Фон. задачи | Celery + Celery Beat |
 | Deploy | Docker Compose |
+
+---
+
+## Этап 4: Что Реализовано
+
+- **Отложенные задачи (Celery):**
+  - `refresh_active_feeds` — периодически прогревает рекомендации для активных пользователей.
+  - `cleanup_old_reactions` — ежедневно удаляет старые реакции для контроля размера таблицы.
+- **Оптимизация БД:**
+  - добавлены индексы для `profile_reactions` (`viewer_id + created_at`, `target_account_id + reaction_type`, `created_at`).
+  - авто-применение `CREATE INDEX IF NOT EXISTS` при старте recommendation-сервиса.
+- **Оптимизация производительности:**
+  - ограничение пула кандидатов (`FEED_CANDIDATE_POOL`), чтобы не сканировать всю таблицу анкет.
+  - вынесен TTL кэша ленты в конфиг (`FEED_REDIS_TTL_SEC`).
+- **Тестирование:**
+  - unit-тесты ранжирования и конфигурации Celery в `services/recommendation_service/tests`.
+
+## Запуск Локально (Docker Compose)
+
+```bash
+cd /Users/dmitrijkrivosekov/Desktop/Dating
+docker compose up --build
+```
+
+Celery-сервисы поднимутся автоматически:
+- `recommendation_celery_worker`
+- `recommendation_celery_beat`
+
+## Запуск Тестов
+
+```bash
+cd /Users/dmitrijkrivosekov/Desktop/Dating
+python3 -m unittest discover -s services/recommendation_service/tests -v
+```

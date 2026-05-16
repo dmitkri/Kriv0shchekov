@@ -27,6 +27,18 @@ services:
       timeout: 3s
       retries: 10
 
+  minio:
+    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+
   rabbitmq:
     image: rabbitmq:3.13-management-alpine
     environment:
@@ -79,8 +91,15 @@ services:
     environment:
       DATABASE_URL: postgresql+asyncpg://postgres:postgres@postgres:5432/dating
       REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
       LOG_LEVEL: INFO
       FEED_SIZE: 10
+      FEED_CANDIDATE_POOL: 200
+      FEED_REDIS_TTL_SEC: 3600
+      FEED_REFRESH_INTERVAL_SEC: 900
+      FEED_WARM_VIEWERS_LIMIT: 200
+      REACTION_RETENTION_DAYS: 90
     ports:
       - "8002:8002"
     depends_on:
@@ -90,6 +109,76 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  recommendation_celery_worker:
+    build:
+      context: .
+      dockerfile: services/recommendation_service/Dockerfile
+    command: celery -A services.recommendation_service.celery_app:celery_app worker --loglevel=INFO
+    environment:
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@postgres:5432/dating
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
+      LOG_LEVEL: INFO
+      FEED_SIZE: 10
+      FEED_CANDIDATE_POOL: 200
+      FEED_REDIS_TTL_SEC: 3600
+      FEED_REFRESH_INTERVAL_SEC: 900
+      FEED_WARM_VIEWERS_LIMIT: 200
+      REACTION_RETENTION_DAYS: 90
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      recommendation_service:
+        condition: service_started
+    restart: unless-stopped
+
+  recommendation_celery_beat:
+    build:
+      context: .
+      dockerfile: services/recommendation_service/Dockerfile
+    command: celery -A services.recommendation_service.celery_app:celery_app beat --loglevel=INFO
+    environment:
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@postgres:5432/dating
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
+      LOG_LEVEL: INFO
+      FEED_SIZE: 10
+      FEED_CANDIDATE_POOL: 200
+      FEED_REDIS_TTL_SEC: 3600
+      FEED_REFRESH_INTERVAL_SEC: 900
+      FEED_WARM_VIEWERS_LIMIT: 200
+      REACTION_RETENTION_DAYS: 90
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      recommendation_celery_worker:
+        condition: service_started
+    restart: unless-stopped
+
+  photo_service:
+    build:
+      context: .
+      dockerfile: services/photo_service/Dockerfile
+    environment:
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
+      MINIO_BUCKET: dating-photos
+      MINIO_SECURE: "false"
+      LOG_LEVEL: INFO
+    ports:
+      - "8003:8003"
+    depends_on:
+      minio:
+        condition: service_started
+    restart: unless-stopped
+
   bot:
     build:
       context: .
@@ -97,12 +186,16 @@ services:
     environment:
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
       RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+      REDIS_URL: redis://redis:6379/0
       USER_SERVICE_URL: http://user_service:8000
       ANKETA_SERVICE_URL: http://anketa_service:8001
       RECOMMENDATION_SERVICE_URL: http://recommendation_service:8002
+      PHOTO_SERVICE_URL: http://photo_service:8003
       LOG_LEVEL: INFO
     depends_on:
       rabbitmq:
+        condition: service_healthy
+      redis:
         condition: service_healthy
       user_service:
         condition: service_started
@@ -110,7 +203,10 @@ services:
         condition: service_started
       recommendation_service:
         condition: service_started
+      photo_service:
+        condition: service_started
     restart: unless-stopped
 
 volumes:
   postgres_data:
+  minio_data:

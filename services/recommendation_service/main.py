@@ -5,7 +5,7 @@ from typing import AsyncGenerator
 from fastapi import Depends, FastAPI, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from services.recommendation_service.database import create_tables, get_session
+from services.recommendation_service.database import create_tables, get_session, optimize_database
 from services.recommendation_service.redis_client import close_redis, connect_redis
 from services.recommendation_service.schemas import (
     ReactionCreate,
@@ -29,6 +29,7 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator:
     await create_tables()
+    await optimize_database()
     await connect_redis()
     logger.info("Recommendation service started")
     yield

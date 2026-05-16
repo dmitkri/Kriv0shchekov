@@ -1,7 +1,17 @@
 from datetime import datetime
 
-from sqlalchemy import BigInteger, Boolean, DateTime, SmallInteger, String, Text, func
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    DateTime,
+    ForeignKey,
+    Integer,
+    SmallInteger,
+    String,
+    Text,
+    func,
+)
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
 class Base(DeclarativeBase):
@@ -35,6 +45,15 @@ class Anketa(Base):
         server_default=func.now(),
         onupdate=func.now(),
     )
+    photos: Mapped[list["Photo"]] = relationship(
+        back_populates="anketa",
+        cascade="all, delete-orphan",
+        order_by="Photo.position",
+    )
+
+    @property
+    def photo_keys(self) -> list[str]:
+        return [photo.file_key for photo in self.photos]
 
     @property
     def profile_completed(self) -> bool:
@@ -50,3 +69,22 @@ class Anketa(Base):
             self.want_city,
         )
         return all(field not in (None, "") for field in required_fields)
+
+
+class Photo(Base):
+    __tablename__ = "photos"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    anketa_account_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("anketas.account_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    file_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    position: Mapped[int] = mapped_column(SmallInteger, default=0, nullable=False)
+    added_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+    )
+    anketa: Mapped[Anketa] = relationship(back_populates="photos")

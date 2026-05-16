@@ -1,6 +1,18 @@
 from dataclasses import dataclass
+from typing import Protocol
 
-from services.recommendation_service.models import Anketa
+
+class AnketaLike(Protocol):
+    display_name: str
+    age: int
+    gender: str
+    city: str
+    about: str
+    want_gender: str
+    want_age_min: int
+    want_age_max: int
+    want_city: str
+    photo_count: int
 
 
 @dataclass(slots=True)
@@ -15,7 +27,7 @@ def _normalize_score(raw_score: float, max_score: float) -> float:
     return round(raw_score / max_score, 4)
 
 
-def calculate_primary_score(candidate: Anketa) -> float:
+def calculate_primary_score(candidate: AnketaLike) -> float:
     score = 0.0
     if candidate.display_name:
         score += 1
@@ -38,7 +50,7 @@ def _match_city(preferred_city: str, actual_city: str) -> bool:
     return preferred_city == "Не важно" or preferred_city.casefold() == actual_city.casefold()
 
 
-def calculate_compatibility_score(viewer: Anketa, candidate: Anketa) -> float:
+def calculate_compatibility_score(viewer: AnketaLike, candidate: AnketaLike) -> float:
     score = 0.0
     if _match_gender(viewer.want_gender, candidate.gender):
         score += 1
@@ -69,4 +81,3 @@ def calculate_final_score(
 ) -> float:
     final_score = primary_score * 0.35 + compatibility_score * 0.45 + behavioral_score * 0.20
     return round(final_score, 4)
-

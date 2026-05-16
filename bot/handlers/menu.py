@@ -1,12 +1,15 @@
 import html
 import logging
+import mimetypes
 from typing import Any
 
-from aiogram import F, Router
+import aiohttp
+from aiogram import Bot, F, Router
 from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import BufferedInputFile, CallbackQuery, Message
 
+from bot.config import settings as bot_settings
 from bot.fsm.states import AnketaStates
 from bot.keyboards.inline import like_dislike_keyboard, profile_action_keyboard
 from bot.keyboards.reply import (
@@ -14,9 +17,11 @@ from bot.keyboards.reply import (
     city_preference_keyboard,
     gender_keyboard,
     main_menu_keyboard,
+    photo_step_keyboard,
     preference_gender_keyboard,
 )
 from bot.services.anketa_api import AnketaAPIClient
+from bot.services.photo_api import PhotoAPIClient
 from bot.services.recommendation_api import RecommendationAPIClient
 from bot.services.user_api import UserAPIClient
 
@@ -26,6 +31,9 @@ router = Router()
 GENDER_OPTIONS = {"Мужчина", "Женщина", "Другое"}
 PREFERENCE_GENDER_OPTIONS = GENDER_OPTIONS | {"Не важно"}
 ANY_CITY = "Не важно"
+PHOTO_STEP_DONE = "Готово"
+KEEP_CURRENT_PHOTOS = "Оставить текущие фото"
+MAX_PHOTOS = 5
 
 
 def _anketa_completed(anketa: dict[str, Any]) -> bool:
@@ -58,14 +66,20 @@ def _prompt(label: str, current_value: Any = None) -> str:
     return f"{label}\n\nСейчас: <b>{_format_value(current_value)}</b>"
 
 
+def _photo_keys(payload: dict[str, Any]) -> list[str]:
+    return list(payload.get("photo_keys") or [])
+
+
 def _format_anketa(anketa: dict[str, Any]) -> str:
+    photo_count = len(_photo_keys(anketa))
     return (
         "<b>Твоя анкета</b>\n\n"
         f"<b>Имя:</b> {_format_value(anketa.get('display_name'))}\n"
         f"<b>Возраст:</b> {_format_value(anketa.get('age'))}\n"
         f"<b>Пол:</b> {_format_value(anketa.get('gender'))}\n"
         f"<b>Город:</b> {_format_value(anketa.get('city'))}\n"
-        f"<b>О себе:</b> {_format_value(anketa.get('about'))}\n\n"
+        f"<b>О себе:</b> {_format_value(anketa.get('about'))}\n"
+        f"<b>Фото:</b> {photo_count}\n\n"
         "<b>Кого ищешь</b>\n"
         f"<b>Пол:</b> {_format_value(anketa.get('want_gender'))}\n"
         f"<b>Возраст:</b> {_format_value(anketa.get('want_age_min'))}"
@@ -81,14 +95,90 @@ def _format_recommendation(profile: dict[str, Any]) -> str:
     if isinstance(final_score, (int, float)):
         compatibility = f"\n\n<i>Совместимость: {final_score:.0%}</i>"
 
+    photo_count = len(_photo_keys(profile))
+    photo_line = f"\n<b>Фото:</b> {photo_count}" if photo_count else ""
     return (
         f"<b>{_format_value(profile.get('display_name'))}, "
         f"{_format_value(profile.get('age'))}</b>\n"
         f"<b>Пол:</b> {_format_value(profile.get('gender'))}\n"
-        f"<b>Город:</b> {_format_value(profile.get('city'))}\n\n"
+        f"<b>Город:</b> {_format_value(profile.get('city'))}"
+        f"{photo_line}\n\n"
         f"{_format_value(profile.get('about'))}"
         f"{compatibility}"
     )
+
+
+def _photo_step_prompt(current_photo_keys: list[str]) -> str:
+    if current_photo_keys:
+        return (
+            "Теперь фото.\n\n"
+            f"Сейчас у тебя сохранено <b>{len(current_photo_keys)}</b> фото.\n"
+            f"Отправь до {MAX_PHOTOS} новых фото по одному сообщению, и я загружу их в хранилище.\n"
+            "Если хочешь оставить текущие фото, нажми кнопку ниже.\n"
+            "Когда закончишь, нажми Готово."
+        )
+    return (
+        "Теперь фото.\n\n"
+        f"Отправь до {MAX_PHOTOS} фото по одному сообщению, и я загружу их в хранилище.\n"
+        "Если пока без фото, можно просто нажать Готово."
+    )
+
+
+def _buffered_photo(content: bytes, content_type: str | None, file_key: str) -> BufferedInputFile:
+    extension = mimetypes.guess_extension(content_type or "image/jpeg") or ".jpg"
+    filename = f"{file_key}{extension}"
+    return BufferedInputFile(content, filename=filename)
+
+
+async def _download_telegram_photo(bot: Bot, file_id: str) -> tuple[bytes, str, str] | None:
+    telegram_file = await bot.get_file(file_id)
+    if not telegram_file.file_path:
+        return None
+
+    filename = telegram_file.file_path.rsplit("/", 1)[-1]
+    content_type = mimetypes.guess_type(filename)[0] or "image/jpeg"
+    url = (
+        f"https://api.telegram.org/file/bot"
+        f"{bot_settings.TELEGRAM_BOT_TOKEN}/{telegram_file.file_path}"
+    )
+
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url) as response:
+            if response.status != 200:
+                logger.warning("Failed to download Telegram photo: status=%d", response.status)
+                return None
+            return await response.read(), filename, content_type
+
+
+async def _send_card(
+    message: Message,
+    caption: str,
+    photo_keys: list[str],
+    photo_api: PhotoAPIClient,
+    reply_markup: Any = None,
+) -> None:
+    if photo_keys:
+        content, content_type = await photo_api.get_photo(photo_keys[0])
+        if content:
+            await message.answer_photo(
+                photo=_buffered_photo(content, content_type, photo_keys[0]),
+                caption=caption,
+                reply_markup=reply_markup,
+            )
+            return
+        logger.warning("Failed to fetch photo for key=%s", photo_keys[0])
+
+    await message.answer(caption, reply_markup=reply_markup)
+
+
+async def _delete_storage_photos(
+    photo_api: PhotoAPIClient,
+    photo_keys: list[str],
+) -> None:
+    for file_key in photo_keys:
+        deleted = await photo_api.delete_photo(file_key)
+        if not deleted:
+            logger.warning("Failed to delete photo from storage: key=%s", file_key)
 
 
 async def _ensure_registered(
@@ -111,11 +201,15 @@ async def _ensure_registered(
 async def _show_profile(
     message: Message,
     anketa_api: AnketaAPIClient,
+    photo_api: PhotoAPIClient,
 ) -> None:
     anketa = await anketa_api.get_anketa(message.from_user.id)
     if anketa and _anketa_completed(anketa):
-        await message.answer(
+        await _send_card(
+            message,
             _format_anketa(anketa),
+            _photo_keys(anketa),
+            photo_api,
             reply_markup=profile_action_keyboard(profile_completed=True),
         )
         return
@@ -143,6 +237,8 @@ async def _start_anketa_edit(
         current_want_age_min=anketa.get("want_age_min", 18),
         current_want_age_max=anketa.get("want_age_max", 60),
         current_want_city=anketa.get("want_city", ANY_CITY),
+        current_photo_keys=_photo_keys(anketa),
+        pending_photo_keys=[],
     )
     await state.set_state(AnketaStates.waiting_for_name)
     await message.answer(
@@ -151,9 +247,67 @@ async def _start_anketa_edit(
     )
 
 
-async def _send_recommendation(message: Message, recommendation: dict[str, Any]) -> None:
-    await message.answer(
+async def _finalize_anketa(
+    message: Message,
+    state: FSMContext,
+    anketa_api: AnketaAPIClient,
+    recommendation_api: RecommendationAPIClient,
+    photo_api: PhotoAPIClient,
+    photo_keys: list[str],
+) -> None:
+    data = await state.get_data()
+    payload = {
+        "display_name": data["display_name"],
+        "age": data["age"],
+        "gender": data["gender"],
+        "city": data["city"],
+        "about": data["about"],
+        "want_gender": data["want_gender"],
+        "want_age_min": data["want_age_min"],
+        "want_age_max": data["want_age_max"],
+        "want_city": data["want_city"],
+        "photo_keys": photo_keys,
+        "visible": True,
+    }
+
+    saved_anketa = await anketa_api.save_anketa(message.from_user.id, payload)
+    if saved_anketa is None:
+        logger.error("Failed to save anketa for user_id=%d", message.from_user.id)
+        await message.answer(
+            "Не получилось сохранить анкету. Попробуй ещё раз или нажми Отмена.",
+            reply_markup=cancel_keyboard(),
+        )
+        return
+
+    current_photo_keys = list(data.get("current_photo_keys", []))
+    removed_photo_keys = [
+        file_key for file_key in current_photo_keys if file_key not in set(photo_keys)
+    ]
+
+    await recommendation_api.refresh_feed(message.from_user.id)
+    await state.clear()
+    await _delete_storage_photos(photo_api, removed_photo_keys)
+
+    await message.answer("✅ Анкета сохранена.", reply_markup=main_menu_keyboard())
+    await _send_card(
+        message,
+        _format_anketa(saved_anketa),
+        _photo_keys(saved_anketa),
+        photo_api,
+        reply_markup=profile_action_keyboard(profile_completed=True),
+    )
+
+
+async def _send_recommendation(
+    message: Message,
+    recommendation: dict[str, Any],
+    photo_api: PhotoAPIClient,
+) -> None:
+    await _send_card(
+        message,
         _format_recommendation(recommendation),
+        _photo_keys(recommendation),
+        photo_api,
         reply_markup=like_dislike_keyboard(int(recommendation["account_id"])),
     )
 
@@ -164,10 +318,11 @@ async def my_profile(
     message: Message,
     user_api: UserAPIClient,
     anketa_api: AnketaAPIClient,
+    photo_api: PhotoAPIClient,
 ) -> None:
     if not await _ensure_registered(message, user_api, message.from_user.id):
         return
-    await _show_profile(message, anketa_api)
+    await _show_profile(message, anketa_api, photo_api)
 
 
 @router.callback_query(F.data == "edit_profile")
@@ -189,8 +344,16 @@ async def edit_profile(
 
 
 @router.message(StateFilter("*"), F.text == "Отмена")
-async def cancel_anketa_edit(message: Message, state: FSMContext) -> None:
+async def cancel_anketa_edit(
+    message: Message,
+    state: FSMContext,
+    photo_api: PhotoAPIClient,
+) -> None:
+    data = await state.get_data()
+    pending_photo_keys = list(data.get("pending_photo_keys", []))
     await state.clear()
+    if pending_photo_keys:
+        await _delete_storage_photos(photo_api, pending_photo_keys)
     await message.answer("Заполнение анкеты отменено.", reply_markup=main_menu_keyboard())
 
 
@@ -389,12 +552,7 @@ async def process_want_age_max(message: Message, state: FSMContext) -> None:
 
 
 @router.message(AnketaStates.waiting_for_want_city)
-async def process_want_city(
-    message: Message,
-    state: FSMContext,
-    anketa_api: AnketaAPIClient,
-    recommendation_api: RecommendationAPIClient,
-) -> None:
+async def process_want_city(message: Message, state: FSMContext) -> None:
     want_city = (message.text or "").strip()
     if want_city != ANY_CITY and (len(want_city) < 2 or len(want_city) > 100):
         await message.answer(
@@ -403,35 +561,128 @@ async def process_want_city(
         )
         return
 
+    await state.update_data(want_city=want_city)
     data = await state.get_data()
-    payload = {
-        "display_name": data["display_name"],
-        "age": data["age"],
-        "gender": data["gender"],
-        "city": data["city"],
-        "about": data["about"],
-        "want_gender": data["want_gender"],
-        "want_age_min": data["want_age_min"],
-        "want_age_max": data["want_age_max"],
-        "want_city": want_city,
-        "visible": True,
-    }
+    current_photo_keys = list(data.get("current_photo_keys", []))
+    await state.set_state(AnketaStates.waiting_for_photo)
+    await message.answer(
+        _photo_step_prompt(current_photo_keys),
+        reply_markup=photo_step_keyboard(has_existing_photos=bool(current_photo_keys)),
+    )
 
-    saved_anketa = await anketa_api.save_anketa(message.from_user.id, payload)
-    if saved_anketa is None:
-        logger.error("Failed to save anketa for user_id=%d", message.from_user.id)
+
+@router.message(AnketaStates.waiting_for_photo, F.photo)
+async def process_photo_upload(
+    message: Message,
+    state: FSMContext,
+    bot: Bot,
+    photo_api: PhotoAPIClient,
+) -> None:
+    data = await state.get_data()
+    pending_photo_keys = list(data.get("pending_photo_keys", []))
+    if len(pending_photo_keys) >= MAX_PHOTOS:
         await message.answer(
-            "Не получилось сохранить анкету. Попробуй ещё раз или нажми Отмена.",
-            reply_markup=cancel_keyboard(),
+            f"Можно сохранить максимум {MAX_PHOTOS} фото. Нажми Готово или Отмена.",
+            reply_markup=photo_step_keyboard(
+                has_existing_photos=bool(data.get("current_photo_keys")),
+            ),
         )
         return
 
-    await recommendation_api.refresh_feed(message.from_user.id)
-    await state.clear()
-    await message.answer("✅ Анкета сохранена.", reply_markup=main_menu_keyboard())
+    telegram_photo = message.photo[-1]
+    downloaded = await _download_telegram_photo(bot, telegram_photo.file_id)
+    if downloaded is None:
+        await message.answer(
+            "Не получилось скачать фото из Telegram. Попробуй отправить его ещё раз.",
+            reply_markup=photo_step_keyboard(
+                has_existing_photos=bool(data.get("current_photo_keys")),
+            ),
+        )
+        return
+
+    content, filename, content_type = downloaded
+    file_key = await photo_api.upload_photo(content, filename, content_type)
+    if file_key is None:
+        await message.answer(
+            "Не получилось загрузить фото в хранилище. Попробуй ещё раз.",
+            reply_markup=photo_step_keyboard(
+                has_existing_photos=bool(data.get("current_photo_keys")),
+            ),
+        )
+        return
+
+    pending_photo_keys.append(file_key)
+    await state.update_data(pending_photo_keys=pending_photo_keys)
     await message.answer(
-        _format_anketa(saved_anketa),
-        reply_markup=profile_action_keyboard(profile_completed=True),
+        f"Фото сохранено: {len(pending_photo_keys)}/{MAX_PHOTOS}. "
+        "Можешь отправить ещё фото или нажать Готово.",
+        reply_markup=photo_step_keyboard(
+            has_existing_photos=bool(data.get("current_photo_keys")),
+        ),
+    )
+
+
+@router.message(AnketaStates.waiting_for_photo, F.text == KEEP_CURRENT_PHOTOS)
+async def keep_current_photos(
+    message: Message,
+    state: FSMContext,
+    anketa_api: AnketaAPIClient,
+    recommendation_api: RecommendationAPIClient,
+    photo_api: PhotoAPIClient,
+) -> None:
+    data = await state.get_data()
+    current_photo_keys = list(data.get("current_photo_keys", []))
+    pending_photo_keys = list(data.get("pending_photo_keys", []))
+    if not current_photo_keys:
+        await message.answer(
+            "Текущих фото пока нет. Отправь новое фото или нажми Готово.",
+            reply_markup=photo_step_keyboard(has_existing_photos=False),
+        )
+        return
+
+    await _delete_storage_photos(photo_api, pending_photo_keys)
+
+    await _finalize_anketa(
+        message,
+        state,
+        anketa_api,
+        recommendation_api,
+        photo_api,
+        current_photo_keys,
+    )
+
+
+@router.message(AnketaStates.waiting_for_photo, F.text == PHOTO_STEP_DONE)
+async def finish_photo_step(
+    message: Message,
+    state: FSMContext,
+    anketa_api: AnketaAPIClient,
+    recommendation_api: RecommendationAPIClient,
+    photo_api: PhotoAPIClient,
+) -> None:
+    data = await state.get_data()
+    pending_photo_keys = list(data.get("pending_photo_keys", []))
+    current_photo_keys = list(data.get("current_photo_keys", []))
+    photo_keys = pending_photo_keys or current_photo_keys
+
+    await _finalize_anketa(
+        message,
+        state,
+        anketa_api,
+        recommendation_api,
+        photo_api,
+        photo_keys,
+    )
+
+
+@router.message(AnketaStates.waiting_for_photo)
+async def process_photo_step_other(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    await message.answer(
+        "На этом шаге отправь фото как изображение, либо нажми Готово.",
+        reply_markup=photo_step_keyboard(
+            has_existing_photos=bool(data.get("current_photo_keys")),
+        ),
     )
 
 
@@ -442,6 +693,7 @@ async def browse_profiles(
     user_api: UserAPIClient,
     anketa_api: AnketaAPIClient,
     recommendation_api: RecommendationAPIClient,
+    photo_api: PhotoAPIClient,
 ) -> None:
     if not await _ensure_registered(message, user_api, message.from_user.id):
         return
@@ -460,13 +712,14 @@ async def browse_profiles(
         await message.answer(error or "Подходящих анкет пока нет.")
         return
 
-    await _send_recommendation(message, recommendation)
+    await _send_recommendation(message, recommendation, photo_api)
 
 
 async def _handle_reaction(
     callback: CallbackQuery,
     reaction_type: str,
     recommendation_api: RecommendationAPIClient,
+    photo_api: PhotoAPIClient,
 ) -> None:
     if callback.message is None:
         await callback.answer()
@@ -498,21 +751,25 @@ async def _handle_reaction(
         await callback.message.answer("Пока это все анкеты в твоей ленте.")
         return
 
-    await _send_recommendation(callback.message, next_recommendation)
+    await _send_recommendation(callback.message, next_recommendation, photo_api)
 
 
 @router.callback_query(F.data.startswith("like:"))
 async def like_profile(
-    callback: CallbackQuery, recommendation_api: RecommendationAPIClient
+    callback: CallbackQuery,
+    recommendation_api: RecommendationAPIClient,
+    photo_api: PhotoAPIClient,
 ) -> None:
-    await _handle_reaction(callback, "like", recommendation_api)
+    await _handle_reaction(callback, "like", recommendation_api, photo_api)
 
 
 @router.callback_query(F.data.startswith("skip:"))
 async def skip_profile(
-    callback: CallbackQuery, recommendation_api: RecommendationAPIClient
+    callback: CallbackQuery,
+    recommendation_api: RecommendationAPIClient,
+    photo_api: PhotoAPIClient,
 ) -> None:
-    await _handle_reaction(callback, "skip", recommendation_api)
+    await _handle_reaction(callback, "skip", recommendation_api, photo_api)
 
 
 @router.message(StateFilter(None), F.text == "❤️ Мэтчи")
@@ -521,5 +778,5 @@ async def my_matches(message: Message) -> None:
 
 
 @router.message(StateFilter(None), F.text == "⚙️ Настройки")
-async def settings(message: Message) -> None:
+async def show_settings(message: Message) -> None:
     await message.answer("Настройки — в разработке 🚧")

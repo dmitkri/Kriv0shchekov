@@ -2,14 +2,17 @@ from typing import Sequence
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
-from services.anketa_service.models import Anketa
+from services.anketa_service.models import Anketa, Photo
 from services.anketa_service.schemas import AnketaUpsert
 
 
 async def get_anketa(session: AsyncSession, account_id: int) -> Anketa | None:
     result = await session.execute(
-        select(Anketa).where(Anketa.account_id == account_id)
+        select(Anketa)
+        .options(selectinload(Anketa.photos))
+        .where(Anketa.account_id == account_id)
     )
     return result.scalar_one_or_none()
 
@@ -18,7 +21,11 @@ async def list_anketas(
     session: AsyncSession, limit: int = 100, offset: int = 0
 ) -> Sequence[Anketa]:
     result = await session.execute(
-        select(Anketa).order_by(Anketa.updated_at.desc()).limit(limit).offset(offset)
+        select(Anketa)
+        .options(selectinload(Anketa.photos))
+        .order_by(Anketa.updated_at.desc())
+        .limit(limit)
+        .offset(offset)
     )
     return result.scalars().all()
 
@@ -40,9 +47,13 @@ async def upsert_anketa(
     anketa.want_age_min = payload.want_age_min
     anketa.want_age_max = payload.want_age_max
     anketa.want_city = payload.want_city
+    anketa.photos.clear()
+    anketa.photos.extend(
+        Photo(file_key=file_key, position=index)
+        for index, file_key in enumerate(payload.photo_keys)
+    )
+    anketa.photo_count = len(payload.photo_keys)
     anketa.visible = payload.visible
 
     await session.commit()
-    await session.refresh(anketa)
-    return anketa
-
+    return await get_anketa(session, account_id) or anketa
